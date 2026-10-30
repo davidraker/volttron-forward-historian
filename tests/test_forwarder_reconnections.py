@@ -187,9 +187,9 @@ def test_setup_keeps_a_core_that_connects_in_time(monkeypatch):
 
 @pytest.mark.forwarder
 def test_remote_connection_uses_the_instance_qualified_identity(monkeypatch):
-    """Same key pair as the local agent, but named <source instance>.<identity> at the
-    destination, as Monolithic's connect_remote_platform does; otherwise every site's
-    forwarder would claim the same identity at a shared destination."""
+    """The agent's own credentials with only the identity changed to <source instance>.<identity>,
+    as Monolithic's connect_remote_platform does; otherwise every site's forwarder would claim
+    the same identity at a shared destination."""
     forwarder = _connecting_forwarder(monkeypatch, connects=True)
 
     forwarder.historian_setup()

@@ -502,10 +502,11 @@ class ForwardHistorian(BaseHistorian):
         _log.debug("Setting up to forward to {}".format(address))
 
         try:
-            # Reuse this agent's own key pair (provisioned by the platform in
+            # Reuse this agent's own credentials (provisioned by the platform in
             # VOLTTRON_HOME/credentials_store) to build an outbound connection to
-            # the remote platform, but present the instance-qualified identity so
-            # forwarders from different sites do not collide at a shared destination.
+            # the remote platform; the message bus negotiates authentication natively.
+            # Only the identity changes: the destination sees <instance>.<identity>
+            # so forwarders from different sites do not collide there.
             credentials = dataclasses.replace(self.get_credentials(self.core.identity),
                                               identity=self.remote_identity())
 
@@ -543,9 +544,9 @@ class ForwardHistorian(BaseHistorian):
 
         This mirrors Monolithic's connect_remote_platform, which connects as the fully
         qualified identity. A bare identity would make every site's forwarder claim the
-        same name at a shared destination, and the destination's ROUTER socket keeps one
+        same name at a shared destination, and the destination's router keeps one
         connection per identity and silently drops the rest. The destination must
-        register this forwarder's public key under the qualified name (README step 4).
+        register this forwarder's credentials under the qualified name (README step 4).
         """
         instance_name = self.instance_name
         if not instance_name:
