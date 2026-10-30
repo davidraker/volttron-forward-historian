@@ -7,6 +7,7 @@ import pytest
 
 from historian.forwarder import forwarder as forwarder_module
 from historian.forwarder.forwarder import ForwardHistorian
+from volttron.types.auth.auth_credentials import PKICredentials
 
 
 class _Future:
@@ -126,7 +127,8 @@ def _connecting_forwarder(monkeypatch, connects, stop_result=True):
     forwarder._target_platform = None
     forwarder.connection_timeout = 0.05
     forwarder.core = SimpleNamespace(identity="forwarder")
-    forwarder.get_credentials = lambda identity: SimpleNamespace(publickey="pk", secretkey="sk")
+    forwarder.instance_name = "source-platform"
+    forwarder.get_credentials = lambda identity: PKICredentials(identity=identity, publickey="pk", secretkey="sk")
     forwarder.statuses = []
     forwarder.vip = SimpleNamespace(
         health=SimpleNamespace(set_status=lambda status, context=None: forwarder.statuses.append(status))
@@ -181,3 +183,53 @@ def test_setup_keeps_a_core_that_connects_in_time(monkeypatch):
     assert not remote.core.greenlet.dead
     assert forwarder.statuses == ["GOOD"]
     remote.core.greenlet.kill()
+
+
+@pytest.mark.forwarder
+def test_remote_connection_uses_the_instance_qualified_identity(monkeypatch):
+    """Same key pair as the local agent, but named <source instance>.<identity> at the
+    destination, as Monolithic's connect_remote_platform does; otherwise every site's
+    forwarder would claim the same identity at a shared destination."""
+    forwarder = _connecting_forwarder(monkeypatch, connects=True)
+
+    forwarder.historian_setup()
+
+    (remote,) = _FakeRemoteAgent.instances
+    assert remote.credentials == PKICredentials(identity="source-platform.forwarder", publickey="pk", secretkey="sk")
+    assert "publickey=pk" in remote.address and "secretkey=sk" in remote.address
+    assert remote.address.startswith("tcp://127.0.0.1:22916?")
+    remote.core.greenlet.kill()
+
+
+class _FakeQuery:
+    result = None
+    error = None
+
+    def __init__(self, core):
+        self.core = core
+
+    def query(self, name):
+        assert name == "instance-name"
+        if self.error:
+            raise self.error
+        return SimpleNamespace(get=lambda timeout=None: self.result)
+
+
+@pytest.mark.forwarder
+def test_remote_identity_queries_the_instance_name_when_not_yet_known(monkeypatch):
+    forwarder = _connecting_forwarder(monkeypatch, connects=True)
+    forwarder.instance_name = None
+    _FakeQuery.result, _FakeQuery.error = "queried-platform", None
+    monkeypatch.setattr(forwarder_module, "Query", _FakeQuery)
+
+    assert forwarder.remote_identity() == "queried-platform.forwarder"
+
+
+@pytest.mark.forwarder
+def test_remote_identity_falls_back_to_the_bare_identity(monkeypatch):
+    forwarder = _connecting_forwarder(monkeypatch, connects=True)
+    forwarder.instance_name = None
+    _FakeQuery.result, _FakeQuery.error = None, RuntimeError("no platform")
+    monkeypatch.setattr(forwarder_module, "Query", _FakeQuery)
+
+    assert forwarder.remote_identity() == "forwarder"
