@@ -97,6 +97,11 @@ class ForwardHistorian(BaseHistorian):
     originally to the second instance.
     """
 
+    # Seconds historian_setup waits for the remote core to connect before giving up
+    # and stopping it. Shorter than the core's own hello check so the forwarder, not
+    # the core, decides when a connection attempt has failed.
+    connection_timeout = 30
+
     def __init__(self, destination_vip, destination_serverkey,
                  custom_topic_list=[],
                  topic_replace_list=[],
@@ -516,12 +521,7 @@ class ForwardHistorian(BaseHistorian):
             address = urlunsplit(url)
 
             remote_agent = Agent(address=address, credentials=credentials)
-
-            # Spawn the remote agent's core event loop and wait for it to connect.
-            event = gevent.event.Event()
-            gevent.spawn(remote_agent.core.run, event)
-            with gevent.Timeout(30):
-                event.wait()
+            self._run_remote_core(remote_agent)
 
         except gevent.Timeout:
             _log.error("Couldn't connect to address. gevent timeout: ({})".format(address))
@@ -533,6 +533,34 @@ class ForwardHistorian(BaseHistorian):
             self._target_platform = remote_agent
             self.vip.health.set_status(
                 STATUS_GOOD, "Connected to address ({})".format(address))
+
+    def _run_remote_core(self, remote_agent):
+        """Run the remote agent's core and wait up to connection_timeout for it to connect.
+
+        On timeout the core is stopped before the Timeout propagates. Otherwise it
+        keeps running with nobody holding a reference to it; if the destination's
+        welcome arrives after our deadline but before the core's own hello check
+        gives up, the orphan connects and holds our identity at the destination for
+        the life of this process. The destination's ROUTER socket then silently
+        drops every later connection with that identity, so each retry fails with
+        "No response to hello message" until the forwarder is restarted.
+        """
+        event = gevent.event.Event()
+        core_greenlet = gevent.spawn(remote_agent.core.run, event)
+        try:
+            with gevent.Timeout(self.connection_timeout):
+                event.wait()
+        except gevent.Timeout:
+            _log.warning(f"No connection to the destination after {self.connection_timeout} seconds; "
+                         f"stopping the remote core so it cannot connect later and hold the identity")
+            stopped = False
+            try:
+                stopped = remote_agent.core.stop(timeout=self.connection_timeout)
+            except Exception as ex:
+                _log.debug(f"Error stopping unconnected remote core: {ex!r}")
+            if not stopped and not core_greenlet.dead:
+                core_greenlet.kill(block=True, timeout=self.connection_timeout)
+            raise
 
     def _remote_connection_alive(self) -> bool:
         """Return True if the cached remote connection still has a live socket.
